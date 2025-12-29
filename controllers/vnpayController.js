@@ -116,8 +116,8 @@ export const vnpayReturn = async (req, res) => {
 
         const redirectUrl =
             vnpQuery.vnp_ResponseCode === "00"
-                ? "http://localhost:5173/payment-success"
-                : "http://localhost:5173/payment-failed";
+                ? "https://backend-ralphome.onrender.com/payment-success"
+                : "https://backend-ralphome.onrender.com/payment-failed";
 
         if (vnpQuery.vnp_ResponseCode === "00") {
             payment.status = "Paid";
