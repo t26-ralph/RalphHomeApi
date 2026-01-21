@@ -25,6 +25,8 @@ const app = express();
 const allowedOrigins = [
     "http://localhost:5173", // frontend admin
     "http://localhost:5174", // frontend client
+    "https://ralph-home-admin.vercel.app",
+    "https://ralphhome.vercel.app",
 ];
 
 app.use(cors({
