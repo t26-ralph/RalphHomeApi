@@ -1,171 +1,115 @@
-import qs from "qs";
-import crypto from "crypto";
 import moment from "moment";
 import Payment from "../models/Payment.js";
 import Booking from "../models/Booking.js";
+import { vnpay } from "../config/vnpay.js";
+import crypto from "crypto";
 
-/* ----------------------------------------------------
- 🧮 Hàm tạo chữ ký HMAC SHA512 chuẩn VNPay
----------------------------------------------------- */
-const createSignature = (params, secretKey) => {
-    const sorted = Object.keys(params)
-        .sort()
-        .reduce((acc, key) => {
-            acc[key] = params[key];
-            return acc;
-        }, {});
+const verifyVnpaySignature = (params, secureHash) => {
+    const secretKey = process.env.VNP_HASHSECRET;
 
-    // ⚠️ KHÔNG encode ở đây
-    const signData = qs.stringify(sorted, { encode: false });
-    const hash = crypto.createHmac("sha512", secretKey).update(signData).digest("hex");
-    return { hash, signData };
+    const sortedKeys = Object.keys(params).sort();
+    const signData = sortedKeys
+        .map(key => `${key}=${params[key]}`)
+        .join("&");
+
+    const hmac = crypto.createHmac("sha512", secretKey);
+    const signed = hmac.update(Buffer.from(signData, "utf-8")).digest("hex");
+
+    return signed === secureHash;
 };
 
-/* ----------------------------------------------------
- 🟢 Tạo URL thanh toán VNPay
----------------------------------------------------- */
-export const createVnpayUrl = (paymentId, amount, req) => {
-    const { VNP_TMNCODE, VNP_HASHSECRET, VNP_URL, VNP_RETURNURL } = process.env;
-    const createDate = moment().format("YYYYMMDDHHmmss");
-    const ipAddr =
-        req.headers["x-forwarded-for"]?.split(",")[0] ||
-        req.connection.remoteAddress ||
-        req.socket?.remoteAddress ||
-        "127.0.0.1";
+/**
+ * Tạo URL thanh toán VNPay
+ * ĐƯỢC GỌI TỪ PaymentController
+ */
+export const generateVnpayUrl = ({ paymentId, amount, ipAddr }) => {
+    if (!ipAddr) {
+        throw new Error("VNPay requires client IP address");
+    }
 
-    const txnRef = paymentId.toString().slice(-8);
-
-    const vnpParams = {
-        vnp_Version: "2.1.0",
-        vnp_Command: "pay",
-        vnp_TmnCode: VNP_TMNCODE,
-        vnp_Locale: "vn",
-        vnp_CurrCode: "VND",
-        vnp_TxnRef: txnRef,
-        vnp_OrderInfo: `Payment_${paymentId}`,
-        vnp_OrderType: "billpayment",
-        vnp_Amount: Math.round(amount * 100),
-        vnp_ReturnUrl: VNP_RETURNURL,
+    return vnpay.buildPaymentUrl({
+        vnp_Amount: Math.round(amount),
         vnp_IpAddr: ipAddr,
-        vnp_CreateDate: createDate,
-    };
-
-    // ✅ Tạo chữ ký TRƯỚC, KHÔNG có SecureHashType
-    const { hash, signData } = createSignature(vnpParams, VNP_HASHSECRET);
-
-    // ✅ Sau đó mới thêm 2 tham số này vào cuối
-    vnpParams.vnp_SecureHashType = "SHA512";
-    vnpParams.vnp_SecureHash = hash;
-
-    console.log("===============================================");
-    console.log("🔹 [VNPay - CREATE] vnpParams gửi lên:", vnpParams);
-    console.log("🔹 [VNPay - CREATE] Chuỗi ký (signData):", signData);
-    console.log("🔹 [VNPay - CREATE] Signature tạo:", hash);
-    console.log("===============================================");
-
-    const paymentUrl = `${VNP_URL}?${qs.stringify(vnpParams, { encode: true })}`;
-    return paymentUrl;
+        vnp_TxnRef: paymentId.toString(),
+        vnp_OrderInfo: `Payment_${paymentId}`,
+        vnp_OrderType: "other",
+        vnp_ReturnUrl: process.env.VNP_RETURNURL,
+        vnp_Locale: "vn",
+        vnp_CreateDate: moment().format("YYYYMMDDHHmmss"),
+    });
 };
 
-
-/* ----------------------------------------------------
- 🟡 Xử lý callback từ VNPay (ReturnURL)
----------------------------------------------------- */
+// VNPay return / callback
 export const vnpayReturn = async (req, res) => {
     try {
-        console.log("===============================================");
-        console.log("🔸 [VNPay - RETURN] Full query:", req.query);
+        console.log("====== VNPay CALLBACK ======");
+        console.log("Query:", req.query);
 
-        const vnpParams = { ...req.query };
-        const vnp_SecureHash = vnpParams.vnp_SecureHash;
-        delete vnpParams.vnp_SecureHash;
-        delete vnpParams.vnp_SecureHashType;
-
-        const sortedParams = Object.keys(vnpParams)
-            .sort()
-            .reduce((acc, key) => ((acc[key] = vnpParams[key]), acc), {});
-
-        const signData = qs.stringify(sortedParams, { encode: false });
-        const computedHash = crypto
-            .createHmac("sha512", process.env.VNP_HASHSECRET)
-            .update(signData)
-            .digest("hex");
-
-        console.log("🔹 [VNPay - RETURN] Chuỗi ký lại:", signData);
-        console.log("🔹 [VNPay - RETURN] Hash VNPay gửi:", vnp_SecureHash);
-        console.log("🔹 [VNPay - RETURN] Hash server tính:", computedHash);
-
-        if (computedHash !== vnp_SecureHash) {
-            console.error("❌ Sai chữ ký VNPay");
-            return res.status(400).json({ message: "Sai chữ ký" });
+        if (!req.query || Object.keys(req.query).length === 0) {
+            return res.redirect(`${process.env.FRONTEND_URL}/payment-result?status=Failed`);
         }
 
+        // 1. Verify chữ ký bằng lib
+        const isValid = vnpay.verifyReturnUrl(req.query);
+        console.log("Signature valid:", isValid);
 
-        // Lấy paymentId từ OrderInfo
-        const paymentId = vnpQuery.vnp_OrderInfo?.split("_")[1];
-        if (!paymentId) {
-            console.error("❌ [VNPay - RETURN] Không tìm thấy paymentId trong OrderInfo");
-            return res.status(400).json({ message: "Thiếu Payment ID" });
+        if (!isValid) {
+            return res.redirect(`${process.env.FRONTEND_URL}/payment-result?status=Failed`);
         }
 
+        // 2. Check kết quả thanh toán
+        const responseCode = req.query.vnp_ResponseCode;
+        const paymentId = req.query.vnp_TxnRef;
+
+        if (responseCode !== "00") {
+            console.log("VNPay failed:", responseCode);
+            return res.redirect(`${process.env.FRONTEND_URL}/payment-result?status=Failed`);
+        }
+
+        // 3. Load Payment + Booking
         const payment = await Payment.findById(paymentId).populate("booking");
+
         if (!payment) {
-            console.error("❌ [VNPay - RETURN] Không tìm thấy payment:", paymentId);
-            return res.status(404).json({ message: "Payment not found" });
+            console.error("Payment not found:", paymentId);
+            return res.redirect(`${process.env.FRONTEND_URL}/payment-result?status=Failed`);
         }
 
-        const redirectUrl =
-            vnpQuery.vnp_ResponseCode === "00"
-                ? "https://backend-ralphome.onrender.com/payment-success"
-                : "https://backend-ralphome.onrender.com/payment-failed";
+        // 4. Idempotent check (tránh double callback)
+        if (payment.status === "Paid") {
+            console.log("Payment already processed:", paymentId);
+            return res.redirect(`${process.env.FRONTEND_URL}/payment-result?status=Success`);
+        }
 
-        if (vnpQuery.vnp_ResponseCode === "00") {
-            payment.status = "Paid";
-            payment.booking.paymentStatus = "Paid";
-            payment.booking.status = "Confirmed";
-            await Promise.all([payment.save(), payment.booking.save()]);
-            console.log("✅ [VNPay - RETURN] Thanh toán thành công:", { paymentId });
+        // 5. Update Payment
+        if (payment.paymentType === "Deposit") {
+            payment.status = "Deposit";
         } else {
-            console.warn("⚠️ [VNPay - RETURN] Thanh toán thất bại:", {
-                code: vnpQuery.vnp_ResponseCode,
-            });
+            payment.status = "Paid";
         }
 
-        console.log("===============================================");
-        return res.redirect(redirectUrl);
+        payment.transactionId = paymentId;
+        payment.paidAt = new Date();
+        await payment.save();
+
+        // 6. Update Booking
+        const booking = payment.booking;
+
+        if (payment.paymentType === "Deposit") {
+            booking.paymentStatus = "Deposit";
+            booking.status = "Confirmed";
+        } else {
+            booking.paymentStatus = "Paid";
+            booking.status = "Confirmed";
+        }
+
+        await booking.save();
+
+        console.log("VNPay payment success:", paymentId);
+
+        // 7. Redirect FE
+        return res.redirect(`${process.env.FRONTEND_URL}/payment-result?status=Success`);
     } catch (err) {
-        console.error("❌ [VNPay - RETURN] Lỗi xử lý callback:", err);
-        return res.status(500).json({ message: "Internal server error" });
-    }
-};
-
-/* ----------------------------------------------------
- 🧾 API tạo thanh toán VNPay
----------------------------------------------------- */
-export const createVnpayPayment = async (req, res) => {
-    try {
-        const { bookingId } = req.body;
-        const booking = await Booking.findById(bookingId).populate("room");
-        if (!booking) return res.status(404).json({ message: "Booking not found" });
-
-        const days = Math.ceil(
-            (new Date(booking.checkOutDate) - new Date(booking.checkInDate)) /
-            (1000 * 60 * 60 * 24)
-        );
-        const amount = booking.room.price * days;
-
-        const payment = await Payment.create({
-            booking: booking._id,
-            user: booking.user,
-            amount,
-            method: "Vnpay",
-            status: "Pending",
-        });
-
-        const paymentUrl = createVnpayUrl(payment._id, amount, req);
-        return res.json({ paymentUrl });
-    } catch (err) {
-        console.error("❌ [VNPay] createVnpayPayment error:", err);
-        return res.status(500).json({ message: "Failed to create VNPay payment" });
+        console.error("VNPay RETURN ERROR:", err);
+        return res.redirect(`${process.env.FRONTEND_URL}/payment-result?status=Failed`);
     }
 };

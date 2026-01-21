@@ -31,7 +31,8 @@
     "node-cron": "^4.2.1",
     "nodemailer": "^7.0.9",
     "qs": "^6.14.0",
-    "resend": "^6.1.2"
+    "resend": "^6.1.2",
+    "vnpay": "^2.4.4"
   },
   "devDependencies": {
     "cross-env": "^10.0.0",

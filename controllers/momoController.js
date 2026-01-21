@@ -1,86 +1,58 @@
 import axios from "axios";
 import crypto from "crypto";
-import Booking from "../models/Booking.js";
-import dotenv from "dotenv";
+import Payment from "../models/Payment.js";
 
-dotenv.config();
+export const createMomoPayment = async (payment) => {
+    const { MOMO_PARTNER_CODE, MOMO_ACCESS_KEY, MOMO_SECRET_KEY, MOMO_REDIRECT_URL, MOMO_IPN_URL } = process.env;
 
-// 🟢 Tạo thanh toán MoMo
-export const createPayment = async (req, res) => {
-    const { bookingId } = req.body;
+    const orderId = payment._id.toString();
+    const requestId = orderId;
+    const amount = payment.amount.toString();
+    const orderInfo = `Payment_${orderId}`;
+    const requestType = "captureWallet";
+    const extraData = "";
 
-    try {
-        const booking = await Booking.findById(bookingId);
-        if (!booking) return res.status(404).json({ message: "Booking not found" });
+    const rawSignature =
+        `accessKey=${MOMO_ACCESS_KEY}&amount=${amount}&extraData=${extraData}&ipnUrl=${MOMO_IPN_URL}&orderId=${orderId}&orderInfo=${orderInfo}&partnerCode=${MOMO_PARTNER_CODE}&redirectUrl=${MOMO_REDIRECT_URL}&requestId=${requestId}&requestType=${requestType}`;
 
-        const partnerCode = process.env.MOMO_PARTNER_CODE;
-        const accessKey = process.env.MOMO_ACCESS_KEY;
-        const secretKey = process.env.MOMO_SECRET_KEY;
-        const redirectUrl = process.env.MOMO_REDIRECT_URL; // frontend page
-        const ipnUrl = process.env.MOMO_IPN_URL; // backend webhook
+    const signature = crypto.createHmac("sha256", MOMO_SECRET_KEY).update(rawSignature).digest("hex");
 
-        const orderId = booking._id.toString();
-        const amount = booking.totalPrice.toString();
-        const orderInfo = `Payment for booking ${booking._id}`;
-        const requestId = orderId;
-        const requestType = "captureWallet";
+    const body = { partnerCode: MOMO_PARTNER_CODE, accessKey: MOMO_ACCESS_KEY, requestId, amount, orderId, orderInfo, redirectUrl: MOMO_REDIRECT_URL, ipnUrl: MOMO_IPN_URL, extraData, requestType, signature };
 
-        // 🧾 Build raw signature theo Momo yêu cầu
-        const rawSignature = `accessKey=${accessKey}&amount=${amount}&extraData=&ipnUrl=${ipnUrl}&orderId=${orderId}&orderInfo=${orderInfo}&partnerCode=${partnerCode}&redirectUrl=${redirectUrl}&requestId=${requestId}&requestType=${requestType}`;
-        const signature = crypto.createHmac("sha256", secretKey).update(rawSignature).digest("hex");
+    const response = await axios.post("https://test-payment.momo.vn/v2/gateway/api/create", body, {
+        headers: { "Content-Type": "application/json" },
+    });
 
-        const body = {
-            partnerCode,
-            accessKey,
-            requestId,
-            amount,
-            orderId,
-            orderInfo,
-            redirectUrl,
-            ipnUrl,
-            extraData: "",
-            requestType,
-            signature,
-        };
+    if (!response.data?.payUrl) throw new Error("MoMo create payment failed");
 
-        const response = await axios.post("https://test-payment.momo.vn/v2/gateway/api/create", body, {
-            headers: { "Content-Type": "application/json" },
-        });
-
-        res.json(response.data);
-    } catch (err) {
-        console.error("❌ Momo create-payment error:", err);
-        res.status(500).json({ message: "Momo payment failed", error: err.message });
-    }
+    return response.data.payUrl;
 };
 
-// 🟣 Webhook MoMo IPN
 export const momoWebhook = async (req, res) => {
-    const data = req.body;
-    const secretKey = process.env.MOMO_SECRET_KEY;
-
     try {
-        const rawSignature = `accessKey=${data.accessKey}&amount=${data.amount}&extraData=${data.extraData}&message=${data.message}&orderId=${data.orderId}&orderInfo=${data.orderInfo}&orderType=${data.orderType}&partnerCode=${data.partnerCode}&payType=${data.payType}&requestId=${data.requestId}&responseTime=${data.responseTime}&resultCode=${data.resultCode}&transId=${data.transId}`;
+        const data = req.body;
+        const secretKey = process.env.MOMO_SECRET_KEY;
+
+        const rawSignature =
+            `accessKey=${data.accessKey}&amount=${data.amount}&extraData=${data.extraData}&message=${data.message}&orderId=${data.orderId}&orderInfo=${data.orderInfo}&orderType=${data.orderType}&partnerCode=${data.partnerCode}&payType=${data.payType}&requestId=${data.requestId}&responseTime=${data.responseTime}&resultCode=${data.resultCode}&transId=${data.transId}`;
+
         const signature = crypto.createHmac("sha256", secretKey).update(rawSignature).digest("hex");
+        if (signature !== data.signature) return res.status(400).json({ resultCode: 1, message: "Invalid signature" });
 
-        if (signature !== data.signature) {
-            return res.status(400).json({ message: "Invalid signature" });
+        const payment = await Payment.findById(data.orderId).populate("booking");
+        if (!payment) return res.status(404).json({ resultCode: 1, message: "Payment not found" });
+
+        payment.status = data.resultCode === 0 ? "Paid" : "Failed";
+        if (payment.booking) {
+            payment.booking.paymentStatus = payment.status === "Paid" ? "Paid" : payment.status;
+            if (payment.status === "Paid") payment.booking.status = "Confirmed";
+            await payment.booking.save();
         }
+        await payment.save();
 
-        const booking = await Booking.findById(data.orderId);
-        if (!booking) return res.status(404).json({ message: "Booking not found" });
-
-        if (data.resultCode === 0) {
-            booking.paymentStatus = "Paid";
-            booking.status = "Confirmed";
-        } else {
-            booking.paymentStatus = "Failed";
-        }
-        await booking.save();
-
-        res.json({ message: "ok" });
+        return res.json({ resultCode: 0, message: "OK" });
     } catch (err) {
-        console.error("❌ Momo webhook error:", err);
-        res.status(500).json({ message: "Webhook error" });
+        console.error("MoMo webhook error:", err);
+        res.status(500).json({ resultCode: 1, message: "Server error" });
     }
 };

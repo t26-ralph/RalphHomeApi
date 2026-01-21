@@ -3,9 +3,9 @@ import {
     createPayment, 
     getMyPayments, 
     getPayments, 
-    updatePaymentStatus } from "../controllers/paymentController.js";
+    updatePaymentStatus,
+     } from "../controllers/paymentController.js";
 import { protect, admin } from "../middleware/authMiddleware.js";
-import { vnpayReturn } from "../controllers/vnpayController.js";
 const router = express.Router();
 
 // User tạo thanh toán

@@ -12,7 +12,14 @@ const roomSchema = new mongoose.Schema(
         maxPeople: { type: Number, required: true },  // Sức chứa tối đa
         description: { type: String },                // Mô tả ngắn
         available: { type: Boolean, default: true },  // Còn trống hay không
-        rating: { type: Number, default: 0 },
+        ratingAvg: {
+            type: Number,
+            default: 0,
+        },
+        ratingCount: {
+            type: Number,
+            default: 0,
+        },
         numReviews: { type: Number, default: 0 },
         images: [
             {

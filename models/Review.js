@@ -3,30 +3,34 @@ import mongoose from "mongoose";
 
 const reviewSchema = new mongoose.Schema(
     {
-        room: {
-            type: mongoose.Schema.Types.ObjectId,
-            ref: "Room",
-            required: true,
-        },
         user: {
             type: mongoose.Schema.Types.ObjectId,
             ref: "User",
             required: true,
         },
+        room: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "Room",
+            required: true,
+        },
+        booking: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "Booking",
+            required: true,
+            unique: true, // mỗi booking chỉ review 1 lần
+        },
         rating: {
             type: Number,
-            required: true,
             min: 1,
             max: 5,
+            required: true,
         },
         comment: {
             type: String,
-            required: true,
+            trim: true,
         },
     },
-    { timestamps: true,
-        versionKey: false 
-    }
+    { timestamps: true }
 );
 
 export default mongoose.model("Review", reviewSchema);
